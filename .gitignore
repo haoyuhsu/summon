@@ -12,3 +12,5 @@ fitting_results_prob/
 *.zip
 *.pt
 3D_Future/
+
+outputs/

@@ -4,6 +4,8 @@ import math
 import os
 import time
 
+os.environ['PYOPENGL_PLATFORM'] = 'egl'
+
 import numpy as np
 import open3d as o3d
 
