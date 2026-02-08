@@ -17,3 +17,5 @@ outputs/
 atiss_ckpt*.ckpt
 *.pth
 *.pt
+
+atiss_ckpt*
