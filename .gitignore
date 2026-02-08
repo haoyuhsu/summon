@@ -14,4 +14,6 @@ fitting_results_prob/
 3D_Future/
 
 outputs/
-atiss_ckpt
+atiss_ckpt*.ckpt
+*.pth
+*.pt
