@@ -20,7 +20,6 @@ python train_contactformer.py --train_data_dir ../data/proxd_train --valid_data_
 
 def train():
     model.train()
-    torch.autograd.set_detect_anomaly(True)
     total_recon_loss_semantics = 0
     total_semantics_recon_acc = 0
     total_KLD_loss = 0
@@ -40,13 +39,19 @@ def train():
         recon_loss_semantics, semantics_recon_acc = compute_recon_loss(gt_cf, pr_cf, mask=mask, **args_dict)
 
         expanded_mask = mask.unsqueeze(-1).expand(-1, -1, mu.shape[-1])
-        mu *= expanded_mask
-        logvar *= expanded_mask
+        # Without a pretrained POSA the randomly-initialized encoder can produce NaN/extreme values
+        # in the first few steps. Sanitize then clamp before computing KL.
+        mu = torch.nan_to_num(mu, nan=0.0, posinf=10.0, neginf=-10.0).clamp(-10.0, 10.0) * expanded_mask
+        logvar = torch.nan_to_num(logvar, nan=0.0, posinf=10.0, neginf=-10.0).clamp(-10.0, 10.0) * expanded_mask
         KLD = kl_w * (-0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())) / expanded_mask.sum()
 
         loss = KLD + recon_loss_semantics
+        if not torch.isfinite(loss):
+            print(f"  [warn] non-finite loss at step {n_steps}, skipping")
+            continue
 
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
         total_recon_loss_semantics += recon_loss_semantics.item()
@@ -120,7 +125,13 @@ if __name__ == '__main__':
                         help="path to POSA_temp dataset dir")
     parser.add_argument("--load_ckpt", type=str, default=None,
                         help="load a checkpoint as the continue point for training")
-    parser.add_argument("--posa_path", type=str, default="../training/posa/model_ckpt/best_model_recon_acc.pt")
+    parser.add_argument("--posa_path", type=str, default="../training/posa/model_ckpt/best_model_recon_acc.pt",
+                        help="optional pretrained POSA checkpoint; pass '' to train POSA from scratch "
+                             "(required when --no_obj_classes != 8 since the released checkpoint is 8-class).")
+    parser.add_argument("--no_obj_classes", type=int, default=8,
+                        help="Number of contact classes (incl. background). Use 73 for humoto (72 objects + bg).")
+    parser.add_argument("--mesh_ds_dir", type=str, default="../mesh_ds",
+                        help="Spiral-conv downsampling matrices dir; must contain mesh_*.obj and {A,D,U}_*.npz.")
     parser.add_argument("--out_dir", type=str, default="../training/", help="Folder that stores checkpoints and training logs")
     parser.add_argument("--experiment", type=str, default="default_experiment",
                         help="Experiment name. Checkpoints and training logs will be saved in out_dir/experiment folder.")
@@ -172,23 +183,27 @@ if __name__ == '__main__':
     dtype = torch.float32
     kl_w = 0.5
 
+    no_obj_classes = args_dict['no_obj_classes']
     train_dataset = ProxDataset_ds(train_data_dir, max_frame=max_frame, fix_orientation=fix_ori,
-                                   step_multiplier=1, jump_step=jump_step)
+                                   step_multiplier=1, jump_step=jump_step,
+                                   no_obj_classes=no_obj_classes)
     train_data_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=num_workers)
     valid_dataset = ProxDataset_ds(valid_data_dir, max_frame=max_frame, fix_orientation=fix_ori,
-                                   step_multiplier=1, jump_step=jump_step)
+                                   step_multiplier=1, jump_step=jump_step,
+                                   no_obj_classes=no_obj_classes)
     valid_data_loader = DataLoader(valid_dataset, batch_size=1, shuffle=True, num_workers=num_workers)
 
     model = ContactFormer(seg_len=max_frame, encoder_mode=encoder_mode, decoder_mode=decoder_mode,
                           n_layer=n_layer, n_head=n_head, f_vert=f_vert, dim_ff=dim_ff, d_hid=512,
-                          posa_path=posa_path).to(device)
+                          posa_path=posa_path, no_obj_classes=no_obj_classes,
+                          mesh_ds_dir=args_dict['mesh_ds_dir']).to(device)
     print(
         f"Training using model----encoder_mode: {encoder_mode}, decoder_mode: {decoder_mode}, max_frame: {max_frame}, "
         f"using_data: {train_data_dir}, epochs: {epochs}, "
         f"n_layer: {n_layer}, n_head: {n_head}, f_vert: {f_vert}, dim_ff: {dim_ff}, jump_step: {jump_step}")
     print("Total trainable parameters: {}".format(count_parameters(model)))
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, threshold=0.0001, patience=10, verbose=True)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, threshold=0.0001, patience=10)
     # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1000, gamma=0.1, verbose=True)
     # milestones = [200, 400, 600, 800]
     # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones, gamma=0.5, verbose=True)

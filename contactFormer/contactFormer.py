@@ -16,13 +16,15 @@ The ContactFormer and its variants presented in the paper
 """
 class ContactFormer(nn.Module):
     def __init__(self, seg_len, encoder_mode, decoder_mode, n_layer=6, n_head=8, f_vert=64, dim_ff=512,
-                 d_hid=512, mesh_ds_dir="../data/mesh_ds", posa_path=None, **kwargs):
+                 d_hid=512, mesh_ds_dir="../data/mesh_ds", posa_path=None, no_obj_classes=8, **kwargs):
         super(ContactFormer, self).__init__()
         self.seg_len = seg_len
         self.encoder_mode = encoder_mode
         self.decoder_mode = decoder_mode
-        self.posa = POSA(ds_us_dir=mesh_ds_dir, use_semantics=True, channels=f_vert)
-        if posa_path is not None:
+        self.no_obj_classes = no_obj_classes
+        self.posa = POSA(ds_us_dir=mesh_ds_dir, use_semantics=True, channels=f_vert,
+                         no_obj_classes=no_obj_classes)
+        if posa_path is not None and posa_path != "" and os.path.exists(posa_path):
             checkpoint = torch.load(posa_path)
             self.posa.load_state_dict(checkpoint['model_state_dict'])
             for p in self.posa.parameters():
@@ -33,14 +35,15 @@ class ContactFormer(nn.Module):
                 p.requires_grad = True
         elif self.decoder_mode == 1:
             self.decoder = TransformerDecoder(seg_len=seg_len, n_layer=n_layer, n_head=n_head, f_vert=f_vert, dim_ff=dim_ff,
-                                              d_hid=d_hid)
+                                              d_hid=d_hid, no_obj_classes=no_obj_classes)
         elif self.decoder_mode == 2:
             self.decoder = TransformerDecoder2(seg_len=seg_len, n_layer=n_layer, n_head=n_head, f_vert=f_vert, dim_ff=dim_ff,
-                                               d_hid=d_hid)
+                                               d_hid=d_hid, no_obj_classes=no_obj_classes)
         elif self.decoder_mode == 3:
-            self.decoder = MLPDecoder3(seg_len=seg_len, d_hid=d_hid)
+            self.decoder = MLPDecoder3(seg_len=seg_len, d_hid=d_hid, no_obj_classes=no_obj_classes)
         elif self.decoder_mode == 4:
-            self.decoder = LSTMDecoder4(seg_len=seg_len, n_layer=n_layer, dim_ff=dim_ff, d_hid=d_hid)
+            self.decoder = LSTMDecoder4(seg_len=seg_len, n_layer=n_layer, dim_ff=dim_ff, d_hid=d_hid,
+                                        no_obj_classes=no_obj_classes)
 
     def forward(self, cf, vertices, mask):
         # vertices: (bs, seg_len, Nverts, 3), mask: (bs, seg_len)
@@ -57,10 +60,11 @@ class ContactFormer(nn.Module):
 
 class TransformerDecoder(nn.Module):
     def __init__(self, seg_len, n_layer=6, n_head=8, f_vert=64, dim_ff=512,
-                 d_hid=512, add_virtual_node=False, **kwargs):
+                 d_hid=512, add_virtual_node=False, no_obj_classes=8, **kwargs):
         super(TransformerDecoder, self).__init__()
         self.seg_len = seg_len
-        self.frame_emb_linear = nn.Linear(655 * 8, d_hid)
+        self.no_obj_classes = no_obj_classes
+        self.frame_emb_linear = nn.Linear(655 * no_obj_classes, d_hid)
         self.relu = nn.ReLU()
         self.pos_codebook = nn.Embedding.from_pretrained(
             transformer.get_sinusoid_pos_encoding(seg_len, d_hid),
@@ -68,13 +72,13 @@ class TransformerDecoder(nn.Module):
         self.tf_decoder = nn.Transformer(d_model=d_hid, nhead=n_head, num_encoder_layers=n_layer,
                                       num_decoder_layers=n_layer, dim_feedforward=dim_ff)
         self.out_linear = nn.ModuleList()
-        self.out_linear.append(nn.Linear(8 + d_hid, d_hid // 2))
+        self.out_linear.append(nn.Linear(no_obj_classes + d_hid, d_hid // 2))
         self.out_linear.append(self.relu)
-        self.out_linear.append(nn.Linear(d_hid // 2, 8))
+        self.out_linear.append(nn.Linear(d_hid // 2, no_obj_classes))
         self.out_linear = nn.Sequential(*self.out_linear)
 
     def forward(self, posa_out, mask):
-        tf_in = posa_out.reshape(posa_out.shape[0], -1)  # (seg_len, nv * 8)
+        tf_in = posa_out.reshape(posa_out.shape[0], -1)  # (seg_len, nv * no_obj_classes)
         tf_in = self.relu(self.frame_emb_linear(tf_in)).unsqueeze(0)  # (1, seg_len, d_hid)
         pos_vec = torch.arange(self.seg_len).unsqueeze(0).repeat(1, 1).to(tf_in.device)  # (bs, seg_len)
         pos_emb = self.pos_codebook(pos_vec)  # (bs, seg_len, d_hid)
@@ -92,10 +96,11 @@ class TransformerDecoder(nn.Module):
 
 class TransformerDecoder2(nn.Module):
     def __init__(self, seg_len, n_layer=6, n_head=8, f_vert=64, dim_ff=512,
-                 d_hid=512, add_virtual_node=False, **kwargs):
+                 d_hid=512, add_virtual_node=False, no_obj_classes=8, **kwargs):
         super(TransformerDecoder2, self).__init__()
         self.seg_len = seg_len
-        self.frame_emb_linear = nn.Linear(655 * 8, d_hid)
+        self.no_obj_classes = no_obj_classes
+        self.frame_emb_linear = nn.Linear(655 * no_obj_classes, d_hid)
         self.relu = nn.ReLU()
         self.pos_codebook = nn.Embedding.from_pretrained(
             transformer.get_sinusoid_pos_encoding(seg_len, d_hid),
@@ -104,13 +109,13 @@ class TransformerDecoder2(nn.Module):
                                                             dim_feedforward=dim_ff)
         self.tf_decoder = nn.TransformerEncoder(self.transformerLayer, num_layers=n_layer)
         self.out_linear = nn.ModuleList()
-        self.out_linear.append(nn.Linear(8 + d_hid, d_hid // 2))
+        self.out_linear.append(nn.Linear(no_obj_classes + d_hid, d_hid // 2))
         self.out_linear.append(nn.ReLU())
-        self.out_linear.append(nn.Linear(d_hid // 2, 8))
+        self.out_linear.append(nn.Linear(d_hid // 2, no_obj_classes))
         self.out_linear = nn.Sequential(*self.out_linear)
 
     def forward(self, posa_out, mask):
-        tf_in = posa_out.reshape(posa_out.shape[0], -1)  # (seg_len, nv * 8)
+        tf_in = posa_out.reshape(posa_out.shape[0], -1)  # (seg_len, nv * no_obj_classes)
         tf_in = self.frame_emb_linear(tf_in)
         tf_in = self.relu(tf_in)  # (1, seg_len, d_hid)
         tf_in = tf_in.unsqueeze(0)
@@ -127,10 +132,11 @@ class TransformerDecoder2(nn.Module):
         return out
 
 class MLPDecoder3(nn.Module):
-    def __init__(self, seg_len, d_hid=512, add_virtual_node=False, **kwargs):
+    def __init__(self, seg_len, d_hid=512, add_virtual_node=False, no_obj_classes=8, **kwargs):
         super(MLPDecoder3, self).__init__()
         self.seg_len = seg_len
-        self.frame_emb_linear = nn.Linear(655 * 8, d_hid)
+        self.no_obj_classes = no_obj_classes
+        self.frame_emb_linear = nn.Linear(655 * no_obj_classes, d_hid)
         self.relu = nn.ReLU()
 
         self.mlp_block = nn.ModuleList()
@@ -141,13 +147,13 @@ class MLPDecoder3(nn.Module):
         self.mlp_block = nn.Sequential(*self.mlp_block)
 
         self.out_linear = nn.ModuleList()
-        self.out_linear.append(nn.Linear(8 + d_hid, d_hid // 2))
+        self.out_linear.append(nn.Linear(no_obj_classes + d_hid, d_hid // 2))
         self.out_linear.append(nn.ReLU())
-        self.out_linear.append(nn.Linear(d_hid // 2, 8))
+        self.out_linear.append(nn.Linear(d_hid // 2, no_obj_classes))
         self.out_linear = nn.Sequential(*self.out_linear)
 
     def forward(self, posa_out, mask=None):
-        mlp_in = posa_out.reshape(posa_out.shape[0], -1)  # (seg_len, nv * 8)
+        mlp_in = posa_out.reshape(posa_out.shape[0], -1)  # (seg_len, nv * no_obj_classes)
         mlp_in = self.frame_emb_linear(mlp_in)
         mlp_in = self.relu(mlp_in)  # (seg_len, d_hid)
 
@@ -160,10 +166,11 @@ class MLPDecoder3(nn.Module):
 
 class LSTMDecoder4(nn.Module):
     def __init__(self, seg_len, n_layer=1, dim_ff=512,
-                 d_hid=512, add_virtual_node=False, **kwargs):
+                 d_hid=512, add_virtual_node=False, no_obj_classes=8, **kwargs):
         super(LSTMDecoder4, self).__init__()
         self.seg_len = seg_len
-        self.frame_emb_linear = nn.Linear(655 * 8, d_hid)
+        self.no_obj_classes = no_obj_classes
+        self.frame_emb_linear = nn.Linear(655 * no_obj_classes, d_hid)
         self.relu = nn.ReLU()
 
         self.lstm = nn.LSTM(d_hid, dim_ff, num_layers=n_layer, batch_first=True, bidirectional=True)
@@ -172,13 +179,13 @@ class LSTMDecoder4(nn.Module):
         self.bidir = nn.Linear(dim_ff * 2, d_hid)
 
         self.out_linear = nn.ModuleList()
-        self.out_linear.append(nn.Linear(8 + d_hid, d_hid // 2))
+        self.out_linear.append(nn.Linear(no_obj_classes + d_hid, d_hid // 2))
         self.out_linear.append(nn.ReLU())
-        self.out_linear.append(nn.Linear(d_hid // 2, 8))
+        self.out_linear.append(nn.Linear(d_hid // 2, no_obj_classes))
         self.out_linear = nn.Sequential(*self.out_linear)
 
     def forward(self, posa_out, mask):
-        lstm_in = posa_out.reshape(posa_out.shape[0], -1)  # (seg_len, nv * 8)
+        lstm_in = posa_out.reshape(posa_out.shape[0], -1)  # (seg_len, nv * no_obj_classes)
         lstm_in = self.frame_emb_linear(lstm_in)
         lstm_in = self.relu(lstm_in)
         lstm_in = lstm_in.unsqueeze(0)  # (1, seg_len, d_hid)

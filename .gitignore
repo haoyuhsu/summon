@@ -19,3 +19,5 @@ atiss_ckpt*.ckpt
 *.pt
 
 atiss_ckpt*
+contact_predictions/
+data_custom/

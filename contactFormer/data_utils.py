@@ -3,7 +3,6 @@ import os.path as osp
 import pickle
 import numpy as np
 from tqdm import tqdm
-import open3d as o3d
 import json
 from scipy.spatial.transform import Rotation as R
 import torch
@@ -11,7 +10,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import smplx
 import trimesh
-import pandas as pd
 import scipy
 
 import eulerangles

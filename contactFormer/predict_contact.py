@@ -28,10 +28,16 @@ if __name__ == '__main__':
     parser.add_argument("--max_frame", type=int, default=256,
                         help="The maximum length of motion sequence (after frame skipping) which model accepts.")
     parser.add_argument("--posa_path", type=str, default="../training/posa/model_ckpt/epoch_0349.pt",
-                        help="The POSA model checkpoint that ContactFormer can pre-load")
+                        help="The POSA model checkpoint that ContactFormer can pre-load. "
+                             "Pass '' to skip loading (required when the checkpoint was trained "
+                             "with --posa_path '' too, e.g. humoto 73-class).")
     parser.add_argument("--output_dir", type=str, default="../results/output")
     parser.add_argument("--save_probability", dest='save_probability', action='store_const', const=True, default=False,
                         help="Save the probability of each contact labels, instead of the most possible contact label")
+    parser.add_argument("--no_obj_classes", type=int, default=8,
+                        help="Number of contact classes (incl. background). Use 73 for humoto.")
+    parser.add_argument("--mesh_ds_dir", type=str, default="../mesh_ds",
+                        help="Spiral-conv downsampling matrices dir; must contain mesh_*.obj and {A,D,U}_*.npz.")
 
     # Parse arguments and assign directories
     args = parser.parse_args()
@@ -52,7 +58,7 @@ if __name__ == '__main__':
     save_probability = args_dict['save_probability']
 
     device = torch.device("cuda")
-    num_obj_classes = 8
+    num_obj_classes = args_dict['no_obj_classes']
     # For fix_ori
     fix_ori = True
     ds_weights = torch.tensor(np.load("./support_files/downsampled_weights.npy"))
@@ -68,7 +74,8 @@ if __name__ == '__main__':
     # Load in model checkpoints and set up data stream
     model = ContactFormer(seg_len=max_frame, encoder_mode=encoder_mode, decoder_mode=decoder_mode,
                           n_layer=n_layer, n_head=n_head, f_vert=f_vert, dim_ff=dim_ff, d_hid=512,
-                          posa_path=posa_path).to(device)
+                          posa_path=posa_path, no_obj_classes=num_obj_classes,
+                          mesh_ds_dir=args_dict['mesh_ds_dir']).to(device)
     model.eval()
     checkpoint = torch.load(ckpt_path)
     model.load_state_dict(checkpoint['model_state_dict'])
